@@ -87,6 +87,7 @@ public class Sslow extends HttpServlet {
 			}
 			fr.md5 = md5;
 			fr.ourl = ourl;
+			fr.requested++;
 			Task task = new Task(fr, response, posStart);
 			task.serve();
 		}
@@ -99,6 +100,7 @@ public class Sslow extends HttpServlet {
 		File file;
 //		String pathLocal;
 		URL ourl;
+		int requested=-1; // first time: give 10 bytes, 2nd time: timeout at stopAt, 3rd time: good.
 
 		private File getFile() throws IOException {
 			File dir = getDir();
@@ -197,11 +199,57 @@ public class Sslow extends HttpServlet {
 		ServletOutputStream sos;
 
 		public void serve() {
-			serve_do(); // should be in another thread if async
-
+			if (fr.requested == 0) {
+				serve_short();
+			} else if (fr.requested == 1)
+				serve_timeout(); // should be in another thread if async
+			else {
+//				if (fr.requested == 2)
+				serve_good();
+//				else {
+//					System.out.println("unknown request");
+//				}
+			}
 		}
 
-		public void serve_do() {
+		private void serve_short() {
+			try {
+				File f = fr.getFile();
+				BufferedInputStream bis = new BufferedInputStream(new FileInputStream(f));
+				long flen = f.length();
+				if (flen >= 10)
+					flen = 10;
+				else
+					flen = flen / 2;
+				if (posStart != 0) {
+					response.setHeader("Content-Range", "bytes " + posStart + "-" + (flen - 1) + "/" + flen);
+					bis.skip(posStart);
+					response.setStatus(206);
+				} else {
+					response.setContentLengthLong(flen);
+					response.setStatus(200);
+				}
+				sos = response.getOutputStream();
+				int bytesSent=0;
+				while (true) {
+					len = bis.read(bytes);
+					if (len <= 0)
+						break;
+					if(bytesSent+len>flen) {
+						len = (int) (flen - bytesSent);
+					}
+					sos.write(bytes, 0, len);
+					bytesSent+=len;
+					break;
+				}
+				sos.close();
+			} catch (Throwable e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+
+		private void serve_good() {
 			try {
 				File f = fr.getFile();
 				BufferedInputStream bis = new BufferedInputStream(new FileInputStream(f));
@@ -219,7 +267,34 @@ public class Sslow extends HttpServlet {
 					len = bis.read(bytes);
 					if (len <= 0)
 						break;
-					if (deliver())
+					sos.write(bytes, 0, len);
+				}
+				sos.close();
+			} catch (Throwable e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+
+		public void serve_timeout() { // slow and timeout at stopAt
+			try {
+				File f = fr.getFile();
+				BufferedInputStream bis = new BufferedInputStream(new FileInputStream(f));
+				long flen = f.length();
+				if (posStart != 0) {
+					response.setHeader("Content-Range", "bytes " + posStart + "-" + (flen - 1) + "/" + flen);
+					bis.skip(posStart);
+					response.setStatus(206);
+				} else {
+					response.setContentLengthLong(flen);
+					response.setStatus(200);
+				}
+				sos = response.getOutputStream();
+				while (true) {
+					len = bis.read(bytes);
+					if (len <= 0)
+						break;
+					if (deliverSlowAndTimeout())
 						continue;
 					break;
 				}
@@ -234,7 +309,7 @@ public class Sslow extends HttpServlet {
 		int second_sent;
 		long second_start;
 
-		private boolean deliver() throws InterruptedException, IOException {
+		private boolean deliverSlowAndTimeout() throws InterruptedException, IOException {
 			int offset = 0;
 			while (true) { // generally 1 loop per second unless speed is high, or lack of data
 				int bytes2send = speed - second_sent;
